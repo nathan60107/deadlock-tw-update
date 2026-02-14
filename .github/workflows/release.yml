@@ -1,0 +1,65 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Build exe
+        run: python build.py
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/deadlock_translator.exe
+          draft: false
+          prerelease: false
+          body: |
+            # Deadlock 繁體中文翻譯自動更新工具 ${{ github.ref_name }}
+            
+            ## 功能特性
+            
+            - ✅ 自動從論壇頁面抓取 Google Drive 下載連結
+            - ✅ 自動驗證下載完整性
+            - ✅ 複製翻譯檔案到遊戲目錄
+            - ✅ 下載完成後自動啟動遊戲
+            
+            ## 使用步驟
+            
+            ### 基本使用
+            1. 在此頁面下載 `deadlock_translator.exe`
+            2. 將 exe 放在 Deadlock 遊戲根目錄
+            3. 雙擊執行 exe，並按照程式指示進行操作
+            4. 程式會自動生成啟動選項內容，請複製該內容
+            5. 在 Steam 中進入 Deadlock 屬性 > 啟動選項，貼上程式提供的內容
+            6. 未來只需要從Steam啟動即可自動更新翻譯
+            
+            ### 進階使用（如需額外參數）
+            如果您需要在啟動選項中添加額外參數，可以在程式提供的內容後面直接追加參數：
+            ```
+            程式提供的內容 + 您的自訂參數
+            ```
+            
+            ### 卸載/停用
+            如果您不想繼續使用此工具，只需清空 Steam 中 Deadlock 的啟動選項即可。無需刪除 exe 檔案。
+            
+            詳見 [README.md](../../blob/${{ github.ref_name }}/README.md)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

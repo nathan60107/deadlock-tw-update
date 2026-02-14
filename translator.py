@@ -9,7 +9,9 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote_to_bytes, unquote
+from email.header import decode_header
+import sys
 
 import requests
 from bs4 import BeautifulSoup
@@ -36,6 +38,10 @@ class TranslationManager:
         
         # 使用遊戲根目錄作為工作目錄
         self.work_dir = self.deadlock_path
+
+        # 下載目錄（所有翻譯檔統一下載到此處）
+        self.download_dir = self.work_dir / "downloads"
+        self.download_dir.mkdir(parents=True, exist_ok=True)
     
     def _detect_deadlock_path(self) -> Path:
         """獲取遊戲路徑（使用當前目錄）"""
@@ -63,8 +69,51 @@ class TranslationManager:
                 download_url = self._convert_gdrive_url(download_url)
             
             logger.info(f"開始下載: {download_url}")
-            
-            # 建立下載請求
+
+            # 先嘗試 HEAD 取得檔名與大小（某些伺服器可能不支援 HEAD）
+            filename = None
+            total_size = 0
+            try:
+                head_resp = requests.head(
+                    download_url,
+                    timeout=self.download_timeout,
+                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
+                    allow_redirects=True
+                )
+                if head_resp.ok:
+                    total_size = int(head_resp.headers.get('content-length', 0) or 0)
+                    filename = self._extract_filename_from_headers(head_resp.headers, head_resp.url)
+            except Exception:
+                # 若 HEAD 失敗，繼續使用 GET 來取得資訊
+                filename = None
+
+            # 再嘗試從 URL 或預設名稱推斷檔名
+            if not filename:
+                try:
+                    parsed = urlparse(download_url)
+                    candidate = Path(parsed.path).name
+                    if candidate:
+                        filename = candidate
+                except Exception:
+                    filename = None
+
+            # 最後回退到預設檔名
+            if not filename:
+                filename = self.translation_filename
+
+            # 下載目標路徑（保留原始檔名，不重新命名）
+            download_path = self.download_dir / filename
+
+            # 如果檔案已存在且通過驗證，跳過下載
+            if download_path.exists():
+                logger.info(f"發現已存在的下載檔案: {download_path}，準備驗證...")
+                if self._validate_download(download_path):
+                    logger.info(f"檔案驗證成功，跳過下載: {download_path}")
+                    return download_path
+                else:
+                    logger.warning(f"已存在檔案驗證失敗，將重新下載: {download_path}")
+
+            # 建立下載請求（實際讀取內容）
             response = requests.get(
                 download_url,
                 timeout=self.download_timeout,
@@ -73,12 +122,19 @@ class TranslationManager:
                 allow_redirects=True
             )
             response.raise_for_status()
-            
-            # 儲存檔案
-            download_path = self.work_dir / self.translation_filename
-            total_size = int(response.headers.get('content-length', 0))
+
+            # 若 HEAD 沒拿到 size，改用 GET 標頭
+            if total_size == 0:
+                total_size = int(response.headers.get('content-length', 0) or 0)
+
+            # 嘗試用 GET 回應的 headers 判斷檔名（覆寫先前推測）
+            filename_from_get = self._extract_filename_from_headers(response.headers, response.url)
+            if filename_from_get and filename_from_get != filename:
+                download_path = self.download_dir / filename_from_get
+                filename = filename_from_get
+
             downloaded_size = 0
-            
+
             with open(download_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
@@ -87,7 +143,7 @@ class TranslationManager:
                         if total_size > 0:
                             percentage = (downloaded_size / total_size) * 100
                             logger.debug(f"下載進度: {percentage:.1f}%")
-            
+
             logger.info(f"下載完成: {download_path} ({downloaded_size} bytes)")
             
             # 驗證下載的檔案
@@ -218,17 +274,165 @@ class TranslationManager:
         except Exception as e:
             logger.error(f"驗證失敗: {str(e)}")
             return False
+
+    def _extract_filename_from_headers(self, headers: dict, url: str) -> str | None:
+        """從 HTTP 回應標頭或 URL 推斷檔名"""
+        try:
+            cd = headers.get('content-disposition') or headers.get('Content-Disposition')
+            if cd:
+                # 支援 RFC2231 filename*=charset'lang'percent-encoded
+                m_rfc2231 = re.search(r"filename\*=(?P<charset>[^']*)'(?P<lang>[^']*)'(?P<value>[^;]+)", cd, flags=re.I)
+                if m_rfc2231:
+                    try:
+                        charset = (m_rfc2231.group('charset') or '').strip() or 'utf-8'
+                        raw = m_rfc2231.group('value').strip().strip('"')
+                        b = unquote_to_bytes(raw)
+                        try:
+                            return b.decode(charset, errors='replace')
+                        except Exception:
+                            return self._normalize_filename(b)
+                    except Exception:
+                        pass
+
+                # 支援常見的 filename="name.ext" 或 filename=name.ext
+                m = re.search(r'filename\s*=\s*"?([^";]+)"?', cd, flags=re.I)
+                if m:
+                    name = m.group(1).strip().strip('"')
+
+                    # 若為 RFC2047 編碼 (=?charset?Q?...)，先解碼
+                    if name.startswith('=?') and '?=' in name:
+                        try:
+                            parts = decode_header(name)
+                            decoded = ''.join(
+                                (part.decode(charset or 'utf-8', errors='replace') if isinstance(part, bytes) else part)
+                                for part, charset in parts
+                            )
+                            return self._normalize_filename(decoded)
+                        except Exception:
+                            pass
+
+                    # 若包含 percent-encoding，先解析為 bytes
+                    try:
+                        if '%' in name:
+                            b = unquote_to_bytes(name)
+                            return self._normalize_filename(b)
+                    except Exception:
+                        try:
+                            return self._normalize_filename(unquote(name))
+                        except Exception:
+                            return name
+
+                    return self._normalize_filename(name)
+
+            # 從 URL path 取得檔名
+            parsed = urlparse(url)
+            name = Path(parsed.path).name
+            if name:
+                # 若 path 中有 percent-encoding，先解析為 bytes
+                try:
+                    if '%' in name:
+                        b = unquote_to_bytes(name)
+                        return self._normalize_filename(b)
+                except Exception:
+                    try:
+                        return self._normalize_filename(unquote(name))
+                    except Exception:
+                        return name
+                return self._normalize_filename(name)
+
+        except Exception:
+            pass
+
+        return None
+
+    def _decode_bytes_with_fallback(self, b: bytes) -> str:
+        """嘗試以 UTF-8、CP950、latin-1 等編碼解碼 bytes，回傳最合理的字串。"""
+        # 1. 優先 utf-8
+        try:
+            s = b.decode('utf-8')
+            return s
+        except Exception:
+            pass
+
+        # 2. 嘗試 CP950 (Big5 / 繁體中文環境)
+        try:
+            s = b.decode('cp950')
+            return s
+        except Exception:
+            pass
+
+        # 3. 退回 latin-1 再嘗試重新解碼為 utf-8 heuristic
+        try:
+            s = b.decode('latin-1')
+            return s
+        except Exception:
+            pass
+
+        # 最後使用 utf-8 replace
+        try:
+            return b.decode('utf-8', errors='replace')
+        except Exception:
+            return b.decode('latin-1', errors='replace')
+
+    def _normalize_filename(self, value) -> str:
+        """Normalize a filename-like value (bytes or str) into a best-effort str.
+
+        - If `value` is bytes: try _decode_bytes_with_fallback.
+        - If `value` is str: try to detect percent-encoding or mojibake and normalize.
+        """
+        try:
+            # bytes -> decode with fallback
+            if isinstance(value, (bytes, bytearray)):
+                return self._decode_bytes_with_fallback(bytes(value))
+
+            # str -> if percent-encoded, convert to bytes then decode
+            if isinstance(value, str):
+                if '%' in value:
+                    try:
+                        b = unquote_to_bytes(value)
+                        return self._decode_bytes_with_fallback(b)
+                    except Exception:
+                        pass
+
+                # try fixing common Latin-1 mojibake
+                fixed = self._fix_latin1_mojibake(value)
+                return fixed
+
+        except Exception:
+            pass
+        # fallback
+        return str(value)
+
+    def _fix_latin1_mojibake(self, s: str) -> str:
+        """嘗試修正把 UTF-8 bytes 當成 Latin-1 解成的錯亂字串。
+
+        如果把字串先以 Latin-1 編碼為 bytes 再以 UTF-8 解碼後，結果包含 CJK 字元，
+        且原始字串不包含 CJK，則回傳修復後字串，否則回傳原始字串。
+        """
+        try:
+            if not s:
+                return s
+            has_cjk_orig = bool(re.search(r'[\u4e00-\u9fff]', s))
+            # 先以 latin-1 編回 bytes，再解為 utf-8
+            b = s.encode('latin-1', errors='replace')
+            decoded = b.decode('utf-8', errors='replace')
+            has_cjk_decoded = bool(re.search(r'[\u4e00-\u9fff]', decoded))
+            if has_cjk_decoded and not has_cjk_orig:
+                return decoded
+            return s
+        except Exception:
+            return s
     
     def replace_translation_files(self, source_path: Path) -> bool:
         """替換翻譯檔案"""
         try:
             logger.info(f"開始替換檔案: {source_path}")
             
-            # 如果是 zip 檔案，先解壓
+            # 如果是 zip 檔案，先解壓到下載目錄
             if source_path.suffix.lower() == '.zip':
-                extract_dir = self.work_dir / source_path.stem
-                logger.info(f"解壓檔案: {extract_dir}")
-                
+                extract_dir = self.download_dir / source_path.stem
+                logger.info(f"解壓檔案到下載目錄: {extract_dir}")
+                extract_dir.mkdir(parents=True, exist_ok=True)
                 with zipfile.ZipFile(source_path, 'r') as zip_file:
                     zip_file.extractall(extract_dir)
             else:
@@ -310,8 +514,16 @@ class TranslationManager:
             deadlock_exe = self.deadlock_path / "game" / "bin" / "win64" / "deadlock.exe"
             
             if deadlock_exe.exists():
-                logger.info(f"啟動遊戲: {deadlock_exe}")
-                subprocess.Popen(str(deadlock_exe))
+                # 將啟動此腳本時收到的命令列參數轉傳給遊戲
+                args = []
+                try:
+                    args = sys.argv[1:]
+                except Exception:
+                    args = []
+
+                cmd = [str(deadlock_exe)] + args
+                logger.info(f"啟動遊戲: {deadlock_exe}，參數: {args}")
+                subprocess.Popen(cmd)
                 return True
             
         except Exception as e:

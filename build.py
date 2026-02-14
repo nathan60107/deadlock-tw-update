@@ -6,6 +6,7 @@ PyInstaller 構建指令
 import subprocess
 import sys
 from pathlib import Path
+import io
 
 
 def build_exe():
@@ -58,5 +59,10 @@ def build_exe():
 
 
 if __name__ == "__main__":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     success = build_exe()
     sys.exit(0 if success else 1)

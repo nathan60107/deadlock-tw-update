@@ -2,8 +2,8 @@ name: Create Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
 
 jobs:
   build:
@@ -28,6 +28,8 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ format('v{0}', github.run_number) }}
+          name: ${{ format('v{0}', github.run_number) }}
           files: dist/deadlock_translator.exe
           draft: false
           prerelease: false

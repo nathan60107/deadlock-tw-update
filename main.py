@@ -4,17 +4,18 @@ Deadlock 繁體中文翻譯自動更新工具
 """
 
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 import os
 from translator import TranslationManager
+import argparse
 
 # 設定日誌
 logging.basicConfig(
-    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('deadlock_translator.log'),
-        logging.StreamHandler()
+        RotatingFileHandler('deadlock_translator.log', maxBytes=1*1024*1024, backupCount=1),
+        logging.StreamHandler(),
     ]
 )
 logger = logging.getLogger(__name__)
@@ -24,14 +25,23 @@ def main():
     """主函式：執行步驟並回傳 success（True/False）。
     同時在成功時提示是否啟動遊戲；失敗時等待 Enter 關閉。"""
     try:
+        parser = argparse.ArgumentParser()
+        # parser.add_argument("--forum_url", default="https://forum.gamer.com.tw/C.php?bsn=80911&snA=76")
+        # parser.add_argument("--download_timeout", type=int, default=30)
+        # parser.add_argument("--translation_filename", default="taiwan_translation.zip")
+        parser.add_argument("--no_auto_launch", action="store_false", dest="auto_launch", help="阻止遊戲啟動")
+        parser.add_argument("--log_level", default="INFO")
+        args, _ = parser.parse_known_args()
+
+        logging.getLogger().setLevel(getattr(logging, args.log_level))
         logger.info("=" * 50)
         logger.info("Deadlock 繁體中文翻譯自動更新工具")
         logger.info("=" * 50)
         
         # 初始化翻譯管理器
-        manager = TranslationManager()
+        manager = TranslationManager(args)
         
-        logger.info(f"遊戲路徑: {manager.deadlock_path}")
+        # logger.info(f"遊戲路徑: {manager.deadlock_path}")
         logger.info(f"論壇網址: {manager.forum_url}")
         
         # 下載翻譯檔案
@@ -68,29 +78,13 @@ def main():
         logger.info(launch_parameters)
         logger.info("=" * 50)
 
-        # 成功路徑：在互動式 Windows 終端提示按任意鍵啟動遊戲；若不想啟動可直接關閉視窗
-        try:
-            import msvcrt
-        except Exception:
-            msvcrt = None
-
-        if msvcrt is not None and sys.stdin.isatty():
-            print("所有步驟完成。按任意鍵啟動遊戲；若不想啟動請直接關閉視窗（點選叉叉）。")
-            try:
-                msvcrt.getch()
-                if manager and manager.launch_game():
-                    logger.info("遊戲已啟動")
-                else:
-                    logger.warning("無法自動啟動遊戲，請手動啟動")
-            except Exception:
-                pass
-        else:
-            # 非互動環境：依照 auto_launch 決定是否自動啟動
-            if manager and manager.auto_launch:
-                if manager.launch_game():
-                    logger.info("遊戲已啟動")
-                else:
-                    logger.warning("無法自動啟動遊戲，請手動啟動")
+        # 啟動遊戲
+        if manager.auto_launch:
+            logger.info("\n啟動 Deadlock 遊戲...")
+            if manager.launch_game():
+                logger.info("遊戲已啟動")
+            else:
+                logger.warning("無法自動啟動遊戲，請手動啟動")
 
         return True
         

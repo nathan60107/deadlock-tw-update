@@ -3,6 +3,7 @@
 負責下載、驗證和替換翻譯檔案
 """
 
+import argparse
 import logging
 import re
 import shutil
@@ -22,19 +23,15 @@ logger = logging.getLogger(__name__)
 class TranslationManager:
     """翻譯下載和替換管理器"""
     
-    def __init__(self):
+    def __init__(self, args):
         """初始化管理器"""
         self.forum_url = "https://forum.gamer.com.tw/C.php?bsn=80911&snA=76"
         self.download_timeout = 30
-        self.auto_launch = True
+        self.auto_launch = args.auto_launch if args.auto_launch is not None else True
         self.translation_filename = "taiwan_translation.zip"
-        self.log_level = "INFO"
         
         # 自動偵測遊戲路徑
         self.deadlock_path = self._detect_deadlock_path()
-        
-        # 設定日誌級別
-        logging.getLogger().setLevel(getattr(logging, self.log_level))
         
         # 使用遊戲根目錄作為工作目錄
         self.work_dir = self.deadlock_path

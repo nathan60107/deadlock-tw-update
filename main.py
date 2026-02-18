@@ -72,15 +72,18 @@ def main():
         logger.info("=" * 50)
         
         # 生成啟動參數供使用者使用
-        exe_path = os.path.abspath(sys.argv[0])
-        launch_parameters = f'"{exe_path}" %command% '
-        logger.info("【重要】請複製以下內容到 Steam 啟動選項：")
-        logger.info(launch_parameters)
-        logger.info("=" * 50)
+        if "-steam" not in sys.argv:
+            exe_path = os.path.abspath(sys.argv[0])
+            launch_parameters = f'"{exe_path}" %command% '
+            logger.info("【重要】請複製以下內容到 Steam 啟動選項：")
+            logger.info(launch_parameters)
+            logger.info("=" * 50)
+            input("按 Enter 鍵繼續...")
+
 
         # 啟動遊戲
         if manager.auto_launch:
-            logger.info("\n啟動 Deadlock 遊戲...")
+            logger.info("啟動 Deadlock 遊戲...")
             if manager.launch_game():
                 logger.info("遊戲已啟動")
             else:

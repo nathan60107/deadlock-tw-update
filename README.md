@@ -28,10 +28,14 @@
 2. 在 Steam 中進入 Deadlock 屬性
 3. 找到「啟動選項」欄位
 4. 貼上程式提供的內容
-![alt text](images/image.png)
+![alt text](images/steam_option.png)
 5. 保存設定
 
-#### 步驟 5：配置啟動選項
+#### 步驟 5：設定語言
+![alt text](images/lang_setting.png)
+在遊戲中將遊戲內文字改為繁體中文，次選英雄構築語言改為簡中或英文後重啟遊戲
+
+#### 步驟 6：啟動遊戲
 未來只需要從 Steam 啟動即可自動更新翻譯
 
 #### 額外參數配置
